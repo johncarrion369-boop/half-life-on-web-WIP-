@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>2D Topdown Half-Life</title>
+  <style>
+    body, html {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      background: #111;
+      color: #eee;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      font-family: Arial, sans-serif;
+    }
+    canvas {
+      border: 4px solid #333;
+      background: #0b1a1e;
+      image-rendering: pixelated;
+    }
+  </style>
+</head>
+<body>
+  <div style="position: absolute; top: 16px; left: 16px; z-index: 10; display: flex; gap: 8px;">
+    <button id="toggleMode">Switch to 3D Mode</button>
+    <span id="status" style="color: #fff; font-size: 14px; line-height: 28px;"></span>
+  </div>
+  <canvas id="game" width="640" height="480"></canvas>
+  <script>
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+    const toggleButton = document.getElementById('toggleMode');
+    const statusText = document.getElementById('status');
+
+    const tileSize = 32;
+    const map = [
+      [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+      [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+      [1,0,0,0,2,0,0,0,0,0,0,0,2,0,0,0,0,0,0,1],
+      [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+      [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+      [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+      [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+      [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+      [1,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,2,0,0,1],
+      [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]
+    ];
+
+    const gameModes = { topdown: 'topdown', firstPerson: 'firstPerson' };
+    let gameMode = gameModes.topdown;
+    const keys = {};
+    const player = { x: 160, y: 160, angle: 0, speed: 2.8, size: 16, color: '#c4c4c4' };
+    const zombies = [
+      { x: 220, y: 120, alive: true },
+      { x: 420, y: 140, alive: true },
+      { x: 320, y: 320, alive: true },
+      { x: 100, y: 320, alive: true }
+    ];
+    const scientists = [
+      { x: 260, y: 200, alive: true, dir: 0, near: false },
+      { x: 380, y: 280, alive: true, dir: Math.PI / 2, near: false }
+    ];
+    const bullets = [];
+    const achievements = {
+      marathon: { name: 'Marathon', desc: 'Run around the map twice.', unlocked: false },
+      firstBlood: { name: 'First Blood', desc: 'Kill your first zombie.', unlocked: false },
+      zombieSlayer: { name: 'Zombie Slayer', desc: 'Kill three zombies.', unlocked: false },
+      triggerHappy: { name: 'Trigger Happy', desc: 'Fire 20 shots.', unlocked: false },
+      sharpshooter: { name: 'Sharpshooter', desc: 'Kill a zombie from far away.', unlocked: false },
+      doctorFriend: { name: 'Doctor\'s Friend', desc: 'Get close to a scientist.', unlocked: false },
+      doubleTap: { name: 'Double Tap', desc: 'Kill two zombies with one shot.', unlocked: false }
+    };
+    const achievementQueue = [];
+    let achievementTimer = 0;
+    let totalDistance = 0;
+    let lastPlayerPos = { x: player.x, y: player.y };
+    let zombieKills = 0;
+    let shotCount = 0;
+    let lastShot = 0;
+    let hitFlash = 0;
+    let muzzleFlash = 0;
+
+    window.addEventListener('keydown', e => {
+      keys[e.key] = true;
+      if (e.key === ' ' || e.code === 'Space') {
+        shoot();
+      }
+    });
+    window.addEventListener('keyup', e => keys[e.key] = false);
+    window.addEventListener('mousedown', e => {
+      if (e.button === 0) shoot();
+    });
+    toggleButton.addEventListener('click', () => {
+      gameMode = gameMode === gameModes.topdown ? gameModes.firstPerson : gameModes.topdown;
+      toggleButton.textContent = gameMode === gameModes.topdown ? 'Switch to 3D Mode' : 'Switch to 2D Mode';
+    });
+
+    function drawMap() {
+      for (let y = 0; y < map.length; y++) {
+        for (let x = 0; x < map[y].length; x++) {
+          const tile = map[y][x];
+          if (tile === 1) {
+            ctx.fillStyle = '#33485d';
+          } else if (tile === 2) {
+            ctx.fillStyle = '#7c2f1b';
+          } else {
+            ctx.fillStyle = '#0e1c22';
+          }
+          ctx.fillRect(x * tileSize, y * tileSize, tileSize, tileSize);
+          if (tile === 1) {
+            ctx.strokeStyle = '#1a2a33';
+            ctx.strokeRect(x * tileSize + 1, y * tileSize + 1, tileSize - 2, tileSize - 2);
+          }
+        }
+      }
+    }
+
+    function isWall(x, y) {
+      const mapX = Math.floor(x / tileSize);
+      const mapY = Math.floor(y / tileSize);
+      return mapY < 0 || mapY >= map.length || mapX < 0 || mapX >= map[0].length || map[mapY][mapX] === 1;
+    }
+
+    function movePlayer(dx, dy) {
+      const nextX = player.x + dx;
+      const nextY = player.y + dy;
+      if (!isWall(nextX - player.size/2, nextY - player.size/2) &&
+          !isWall(nextX + player.size/2, nextY - player.size/2) &&
+          !isWall(nextX - player.size/2, nextY + player.size/2) &&
+          !isWall(nextX + player.size/2, nextY + player.size/2)) {
+        player.x = nextX;
+        player.y = nextY;
+      }
+    }
+
+    function updateZombies() {
+      zombies.forEach(zombie => {
+        if (!zombie.alive) return;
+        const dx = player.x - zombie.x;
+        const dy = player.y - zombie.y;
+        const dist = Math.hypot(dx, dy);
+        if (dist > 14) {
+          const move = 0.7;
+          const stepX = dx / dist * move;
+          const stepY = dy / dist * move;
+          if (!isWall(zombie.x + stepX, zombie.y)) zombie.x += stepX;
+          if (!isWall(zombie.x, zombie.y + stepY)) zombie.y += stepY;
+        }
+      });
+    }
+
+    function updateScientists() {
+      scientists.forEach(scientist => {
+        if (!scientist.alive) return;
+        const dx = player.x - scientist.x;
+        const dy = player.y - scientist.y;
+        const dist = Math.hypot(dx, dy);
+        if (dist < 120) {
+          const move = 0.6;
+          const stepX = -dx / dist * move;
+          const stepY = -dy / dist * move;
+          if (!isWall(scientist.x + stepX, scientist.y)) scientist.x += stepX;
+          if (!isWall(scientist.x, scientist.y + stepY)) scientist.y += stepY;
+        } else if (Math.random() < 0.006) {
+          scientist.dir = Math.random() * Math.PI * 2;
+        }
+        const step = 0.4;
+        const nextX = scientist.x + Math.cos(scientist.dir) * step;
+        const nextY = scientist.y + Math.sin(scientist.dir) * step;
+        if (!isWall(nextX, nextY)) {
+          scientist.x = nextX;
+          scientist.y = nextY;
+        }
+      });
+    }
+
+    function unlockAchievement(key) {
+      const ach = achievements[key];
+      if (!ach || ach.unlocked) return;
+      ach.unlocked = true;
+      achievementQueue.push(ach.name + ' unlocked! ' + ach.desc);
+      achievementTimer = 240;
+    }
+
+    function shoot() {
+      const now = performance.now();
+      if (now - lastShot < 180) return;
+      lastShot = now;
+      shotCount += 1;
+      hitFlash = 8;
+      muzzleFlash = 8;
+      bullets.push({ angle: player.angle, time: now, x: player.x, y: player.y });
+      if (shotCount >= 20) unlockAchievement('triggerHappy');
+      let farKill = false;
+      let killedThisShot = 0;
+      zombies.forEach(zombie => {
+        if (!zombie.alive) return;
+        const dx = zombie.x - player.x;
+        const dy = zombie.y - player.y;
+        const dist = Math.hypot(dx, dy);
+        const angleToZombie = Math.atan2(dy, dx);
+        let delta = angleToZombie - player.angle;
+        while (delta > Math.PI) delta -= Math.PI * 2;
+        while (delta < -Math.PI) delta += Math.PI * 2;
+        if (Math.abs(delta) < 0.30 && dist < 220) {
+          zombie.alive = false;
+          killedThisShot += 1;
+          zombieKills += 1;
+          if (dist > 180) farKill = true;
+        }
+      });
+      if (zombieKills > 0) unlockAchievement('firstBlood');
+      if (zombieKills >= 3) unlockAchievement('zombieSlayer');
+      if (farKill) unlockAchievement('sharpshooter');
+      if (killedThisShot >= 2) unlockAchievement('doubleTap');
+    }
+
+    function update() {
+      const forward = keys.ArrowUp || keys.w;
+      const backward = keys.ArrowDown || keys.s;
+      const turnLeft = keys.ArrowLeft || keys.a;
+      const turnRight = keys.ArrowRight || keys.d;
+      let moved = false;
+
+      if (gameMode === gameModes.firstPerson) {
+        if (turnLeft) player.angle -= 0.04;
+        if (turnRight) player.angle += 0.04;
+        let dx = 0;
+        let dy = 0;
+        if (forward) {
+          dx += Math.cos(player.angle) * player.speed;
+          dy += Math.sin(player.angle) * player.speed;
+        }
+        if (backward) {
+          dx -= Math.cos(player.angle) * player.speed;
+          dy -= Math.sin(player.angle) * player.speed;
+        }
+        if (dx !== 0 || dy !== 0) moved = true;
+        movePlayer(dx, dy);
+      } else {
+        let dx = 0;
+        let dy = 0;
+        if (forward) dy -= player.speed;
+        if (backward) dy += player.speed;
+        if (turnLeft) dx -= player.speed;
+        if (turnRight) dx += player.speed;
+        if (dx !== 0 || dy !== 0) moved = true;
+        movePlayer(dx, dy);
+      }
+
+      if (moved) {
+        const dx = player.x - lastPlayerPos.x;
+        const dy = player.y - lastPlayerPos.y;
+        totalDistance += Math.hypot(dx, dy);
+        lastPlayerPos.x = player.x;
+        lastPlayerPos.y = player.y;
+        if (totalDistance >= 3400) unlockAchievement('marathon');
+      }
+
+      scientists.forEach(scientist => {
+        if (!scientist.alive) return;
+        const dx = player.x - scientist.x;
+        const dy = player.y - scientist.y;
+        const near = Math.hypot(dx, dy) < 48;
+        if (near && !scientist.near) {
+          scientist.near = true;
+          unlockAchievement('doctorFriend');
+        }
+      });
+
+      if (hitFlash > 0) hitFlash -= 1;
+      if (muzzleFlash > 0) muzzleFlash -= 1;
+      updateZombies();
+      updateScientists();
+    }
+
+    function renderPlayer2D() {
+      ctx.fillStyle = '#999';
+      ctx.fillRect(player.x - player.size/2, player.y - player.size/2, player.size, player.size);
+      ctx.fillStyle = '#c4c4c4';
+      ctx.fillRect(player.x - 4, player.y - 10, 8, 10);
+      ctx.strokeStyle = '#222';
+      ctx.beginPath();
+      ctx.moveTo(player.x, player.y);
+      ctx.lineTo(player.x + Math.cos(player.angle) * 24, player.y + Math.sin(player.angle) * 24);
+      ctx.stroke();
+      if (muzzleFlash > 0) {
+        ctx.strokeStyle = 'rgba(255, 240, 160, 0.9)';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(player.x + Math.cos(player.angle) * 12, player.y + Math.sin(player.angle) * 12);
+        ctx.lineTo(player.x + Math.cos(player.angle) * 44, player.y + Math.sin(player.angle) * 44);
+        ctx.stroke();
+        ctx.lineWidth = 1;
+      }
+    }
+
+    function renderZombies2D() {
+      zombies.forEach(zombie => {
+        if (!zombie.alive) return;
+        ctx.fillStyle = '#d43a3a';
+        ctx.fillRect(zombie.x - 8, zombie.y - 10, 16, 20);
+        ctx.fillStyle = '#6b1c1c';
+        ctx.fillRect(zombie.x - 8, zombie.y - 10, 16, 10);
+        ctx.fillStyle = '#111';
+        ctx.fillRect(zombie.x - 5, zombie.y - 4, 3, 3);
+        ctx.fillRect(zombie.x + 2, zombie.y - 4, 3, 3);
+      });
+    }
+
+    function renderScientists2D() {
+      scientists.forEach(scientist => {
+        if (!scientist.alive) return;
+        ctx.fillStyle = '#eef9ff';
+        ctx.fillRect(scientist.x - 6, scientist.y - 12, 12, 20);
+        ctx.fillStyle = '#4d8fb4';
+        ctx.fillRect(scientist.x - 6, scientist.y - 12, 12, 8);
+        ctx.fillStyle = '#ffe8c0';
+        ctx.beginPath();
+        ctx.arc(scientist.x, scientist.y - 16, 4, 0, Math.PI * 2);
+        ctx.fill();
+      });
+    }
+
+    function renderAchievements() {
+      const activeAchievements = Object.values(achievements).filter(a => a.unlocked);
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
+      ctx.fillRect(canvas.width - 210, 14, 196, 108);
+      ctx.fillStyle = '#fff';
+      ctx.font = '12px Arial';
+      ctx.fillText('Achievements', canvas.width - 192, 30);
+      activeAchievements.slice(0, 5).forEach((ach, index) => {
+        ctx.fillStyle = '#a5d8ff';
+        ctx.fillText('• ' + ach.name, canvas.width - 192, 50 + index * 18);
+      });
+      if (achievementTimer > 0 && achievementQueue.length > 0) {
+        const message = achievementQueue[0];
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
+        ctx.fillRect(20, 20, 260, 40);
+        ctx.fillStyle = '#000';
+        ctx.font = '13px Arial';
+        ctx.fillText(message, 28, 44);
+        achievementTimer -= 1;
+        if (achievementTimer <= 0) achievementQueue.shift();
+      }
+    }
+
+    function raycast(rayAngle) {
+      const step = 0.05;
+      let distance = 0;
+      while (distance < 18) {
+        distance += step;
+        const testX = player.x + Math.cos(rayAngle) * distance;
+        const testY = player.y + Math.sin(rayAngle) * distance;
+        const mapX = Math.floor(testX / tileSize);
+        const mapY = Math.floor(testY / tileSize);
+        if (mapY < 0 || mapY >= map.length || mapX < 0 || mapX >= map[0].length) {
+          return { distance, wall: true, tile: 1 };
+        }
+        const tile = map[mapY][mapX];
+        if (tile === 1 || tile === 2) {
+          return { distance, wall: true, tile };
+        }
+      }
+      return { distance: 18, wall: false, tile: 0 };
+    }
+
+    function render3D() {
+      const fov = Math.PI / 3;
+      const halfHeight = canvas.height / 2;
+      const sky = ctx.createLinearGradient(0, 0, 0, halfHeight);
+      sky.addColorStop(0, '#6e9cb8');
+      sky.addColorStop(1, '#4d6a7c');
+      ctx.fillStyle = sky;
+      ctx.fillRect(0, 0, canvas.width, halfHeight);
+      const floor = ctx.createLinearGradient(0, halfHeight, 0, canvas.height);
+      floor.addColorStop(0, '#1e262d');
+      floor.addColorStop(1, '#0d1217');
+      ctx.fillStyle = floor;
+      ctx.fillRect(0, halfHeight, canvas.width, halfHeight);
+
+      const numRays = 128;
+      const sliceWidth = canvas.width / numRays;
+      for (let i = 0; i < numRays; i++) {
+        const rayAngle = player.angle - fov / 2 + (i / numRays) * fov;
+        const result = raycast(rayAngle);
+        const correctedDistance = Math.max(0.01, result.distance * Math.cos(rayAngle - player.angle));
+        const lineHeight = Math.min(canvas.height, (tileSize * canvas.height) / correctedDistance);
+        const baseShade = 200 - Math.min(180, Math.floor(correctedDistance * 12));
+        let colorTop;
+        let colorBottom;
+        if (result.tile === 2) {
+          colorTop = `rgb(${baseShade + 20}, ${Math.max(0, baseShade - 70)}, ${Math.max(0, baseShade - 70)})`;
+          colorBottom = `rgb(${Math.max(0, baseShade - 10)}, ${Math.max(0, baseShade - 80)}, ${Math.max(0, baseShade - 80)})`;
+        } else {
+          colorTop = `rgb(${baseShade + 30}, ${baseShade - 10}, ${baseShade - 40})`;
+          colorBottom = `rgb(${baseShade - 20}, ${baseShade - 40}, ${baseShade - 70})`;
+        }
+        const wallGradient = ctx.createLinearGradient(0, halfHeight - lineHeight / 2, 0, halfHeight + lineHeight / 2);
+        wallGradient.addColorStop(0, colorTop);
+        wallGradient.addColorStop(1, colorBottom);
+        ctx.fillStyle = wallGradient;
+        ctx.fillRect(i * sliceWidth, halfHeight - lineHeight / 2, sliceWidth + 1, lineHeight);
+        if (result.wall) {
+          ctx.strokeStyle = result.tile === 2 ? 'rgba(255, 120, 120, 0.2)' : 'rgba(255,255,255,0.1)';
+          ctx.beginPath();
+          ctx.moveTo(i * sliceWidth + sliceWidth / 2, halfHeight - lineHeight / 2);
+          ctx.lineTo(i * sliceWidth + sliceWidth / 2, halfHeight + lineHeight / 2);
+          ctx.stroke();
+          if (result.distance < 4) {
+            ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+            ctx.beginPath();
+            ctx.moveTo(i * sliceWidth, halfHeight - lineHeight / 2);
+            ctx.lineTo(i * sliceWidth + sliceWidth, halfHeight - lineHeight / 2);
+            ctx.stroke();
+          }
+        }
+      }
+
+      const now = performance.now();
+      const activeBullets = bullets.filter(b => now - b.time < 120);
+      if (activeBullets.length > 0) {
+        ctx.strokeStyle = 'rgba(255, 230, 120, 0.75)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(canvas.width / 2, canvas.height / 2);
+        ctx.lineTo(canvas.width / 2 + Math.cos(player.angle) * 140, canvas.height / 2 + Math.sin(player.angle) * 140);
+        ctx.stroke();
+      }
+      bullets.length = activeBullets.length;
+      activeBullets.forEach((b, index) => bullets[index] = b);
+      if (activeBullets.length > 0) {
+        const barrel = activeBullets[0];
+        ctx.fillStyle = 'rgba(255, 232, 160, 0.6)';
+        ctx.beginPath();
+        ctx.arc(canvas.width / 2 + Math.cos(barrel.angle) * 20, canvas.height / 2 + Math.sin(barrel.angle) * 20, 8, 0, Math.PI*2);
+        ctx.fill();
+      }
+      bullets.length = activeBullets.length;
+      activeBullets.forEach((b, index) => bullets[index] = b);
+
+      function drawBillboard(entity, color) {
+        const dx = entity.x - player.x;
+        const dy = entity.y - player.y;
+        const dist = Math.hypot(dx, dy);
+        if (dist < 14) return;
+        const angleTo = Math.atan2(dy, dx);
+        let delta = angleTo - player.angle;
+        while (delta > Math.PI) delta -= Math.PI * 2;
+        while (delta < -Math.PI) delta += Math.PI * 2;
+        if (Math.abs(delta) < fov / 2) {
+          const projection = (delta + fov / 2) / fov;
+          const x = projection * canvas.width;
+          const size = Math.min(220, (tileSize * canvas.height) / dist);
+          const alpha = 1 - Math.min(0.85, dist / 16);
+          ctx.fillStyle = `rgba(${color.r}, ${color.g}, ${color.b}, ${alpha})`;
+          ctx.fillRect(x - size / 2, halfHeight - size / 2, size, size);
+          if (color.type === 'scientist') {
+            ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
+            ctx.fillRect(x - size / 4, halfHeight - size / 2, size / 2, size * 0.5);
+            ctx.fillStyle = `rgba(255, 220, 180, ${alpha})`;
+            ctx.beginPath();
+            ctx.arc(x, halfHeight - size * 0.45, size * 0.12, 0, Math.PI * 2);
+            ctx.fill();
+          } else {
+            ctx.fillStyle = `rgba(140, 30, 30, ${alpha})`;
+            ctx.fillRect(x - size / 5, halfHeight - size / 4, size / 2, size * 0.5);
+            ctx.fillStyle = `rgba(190, 70, 70, ${alpha})`;
+            ctx.fillRect(x - size / 2, halfHeight - size / 2, size, size * 0.25);
+          }
+        }
+      }
+
+      zombies.forEach(zombie => {
+        if (!zombie.alive) return;
+        drawBillboard(zombie, { r: 196, g: 54, b: 54, type: 'zombie' });
+      });
+      scientists.forEach(scientist => {
+        if (!scientist.alive) return;
+        drawBillboard(scientist, { r: 230, g: 230, b: 255, type: 'scientist' });
+      });
+
+      ctx.fillStyle = '#222';
+      ctx.fillRect(220, 320, 200, 120);
+      ctx.fillStyle = '#888';
+      ctx.fillRect(260, 280, 120, 120);
+      ctx.fillStyle = '#333';
+      ctx.fillRect(280, 310, 20, 80);
+      ctx.fillRect(340, 300, 20, 60);
+      ctx.fillStyle = '#bbb';
+      ctx.fillRect(255, 360, 130, 36);
+      if (muzzleFlash > 0) {
+        ctx.fillStyle = 'rgba(255, 200, 120, 0.55)';
+        ctx.fillRect(220, 320, 200, 120);
+      }
+
+      ctx.strokeStyle = '#fff';
+      ctx.beginPath();
+      ctx.moveTo(canvas.width / 2 - 8, canvas.height / 2);
+      ctx.lineTo(canvas.width / 2 + 8, canvas.height / 2);
+      ctx.moveTo(canvas.width / 2, canvas.height / 2 - 8);
+      ctx.lineTo(canvas.width / 2, canvas.height / 2 + 8);
+      ctx.stroke();
+
+      ctx.fillStyle = '#fff';
+      ctx.font = '14px Arial';
+      ctx.fillText('Zombies left: ' + zombies.filter(z => z.alive).length, 14, 24);
+      ctx.fillText('Scientists: ' + scientists.filter(s => s.alive).length, 14, 44);
+      ctx.fillText('Use W/A/S/D or arrows to move, space/click to shoot', 14, 64);
+      ctx.fillText('Mode: 3D shooter', 14, 84);
+
+      if (hitFlash > 0) {
+        ctx.fillStyle = 'rgba(255,220,120,0.12)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      }
+    }
+
+    function render() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      if (gameMode === gameModes.topdown) {
+        drawMap();
+        renderZombies2D();
+        renderScientists2D();
+        renderPlayer2D();
+        ctx.fillStyle = '#eee';
+        ctx.font = '14px Arial';
+        ctx.fillText('2D Topdown Half-Life style demo', 10, canvas.height - 50);
+        ctx.fillText('Zombies: ' + zombies.filter(z => z.alive).length, 10, canvas.height - 30);
+        ctx.fillText('Scientists: ' + scientists.filter(s => s.alive).length, 10, canvas.height - 10);
+      } else {
+        render3D();
+      }
+      renderAchievements();
+      statusText.textContent = gameMode === gameModes.topdown ? '2D Topdown' : '3D FPV';
+      requestAnimationFrame(loop);
+    }
+
+    function loop() {
+      update();
+      render();
+    }
+
+    loop();
+  </script>
+</body>
+</html>
